@@ -18,6 +18,8 @@ import org.tensorflow.lite.support.image.ImageProcessor
 import org.tensorflow.lite.support.image.TensorImage
 import org.tensorflow.lite.support.tensorbuffer.TensorBuffer
 import java.nio.ByteBuffer
+import org.tensorflow.lite.gpu.GpuDelegate
+import org.tensorflow.lite.gpu.CompatibilityList
 
 class InstanceSegmentation(
     context: Context,
@@ -46,18 +48,18 @@ class InstanceSegmentation(
 
         /* Using GPU cause problems */
 
-//        val compatList = CompatibilityList()
-//        val options = Interpreter.Options().apply{
-//            if(compatList.bestOptionsForThisDevice){
-//                val delegateOptions = compatList.bestOptionsForThisDevice
-//                this.addDelegate(GpuDelegate(delegateOptions))
-//            } else {
-//                this.setNumThreads(4)
-//            }
-//        }
+        val compatList = CompatibilityList()
+        val options = Interpreter.Options().apply{
+            if (compatList.isDelegateSupportedOnThisDevice) {
+                val delegateOptions = compatList.bestOptionsForThisDevice
+                this.addDelegate(GpuDelegate(delegateOptions))
+            } else {
+                this.setNumThreads(4)
+            }
+        }
 
-        val options = Interpreter.Options()
-        options.setNumThreads(1)
+        //val options = Interpreter.Options()
+        //options.setNumThreads(1)
 
         val model = FileUtil.loadMappedFile(context, modelPath)
         interpreter = Interpreter(model, options)
