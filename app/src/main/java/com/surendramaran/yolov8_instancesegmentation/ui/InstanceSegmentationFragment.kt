@@ -1,225 +1,217 @@
 package com.surendramaran.yolov8_instancesegmentation.ui
 
-import android.Manifest
-import android.annotation.SuppressLint
 import android.app.Dialog
-import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
-import android.provider.MediaStore
 import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.Toast
-import androidx.camera.core.*
-import androidx.camera.lifecycle.ProcessCameraProvider
-import androidx.core.app.ActivityCompat
-import androidx.core.content.ContextCompat
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.FileProvider
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.activityViewModels
 import androidx.lifecycle.lifecycleScope
-import com.google.common.util.concurrent.ListenableFuture
-import com.surendramaran.yolov8_instancesegmentation.Constants
+import com.surendramaran.yolov8_instancesegmentation.BuildConfig
+import com.surendramaran.yolov8_instancesegmentation.Constants.LABELS_PATH
+import com.surendramaran.yolov8_instancesegmentation.Constants.MODEL_PATH
 import com.surendramaran.yolov8_instancesegmentation.R
 import com.surendramaran.yolov8_instancesegmentation.databinding.DialogSettingsBinding
 import com.surendramaran.yolov8_instancesegmentation.databinding.FragmentInstanceSegmentationBinding
+import com.surendramaran.yolov8_instancesegmentation.ml.DrawImages
 import com.surendramaran.yolov8_instancesegmentation.ml.InstanceSegmentation
 import com.surendramaran.yolov8_instancesegmentation.ml.Success
-import com.surendramaran.yolov8_instancesegmentation.utils.YuvToRgbConverter
+import com.surendramaran.yolov8_instancesegmentation.utils.OrientationLiveData
+import com.surendramaran.yolov8_instancesegmentation.utils.Utils
+import com.surendramaran.yolov8_instancesegmentation.utils.Utils.addCarouselEffect
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
+import kotlin.math.max
 
-class InstanceSegmentationFragment : Fragment() {
+class InstanceSegmentationFragment : Fragment(){
     private var _binding: FragmentInstanceSegmentationBinding? = null
     private val binding get() = _binding!!
 
     private val viewModel: SettingsViewModel by activityViewModels()
 
     private var instanceSegmentation: InstanceSegmentation? = null
+    private lateinit var orientationLiveData: OrientationLiveData
 
-    // CameraX variables
-    private lateinit var cameraProviderFuture: ListenableFuture<ProcessCameraProvider>
-    private lateinit var cameraExecutor: ExecutorService
-    private var imageAnalyzer: ImageAnalysis? = null
-    private lateinit var bitmapBuffer: Bitmap
-    private lateinit var converter: YuvToRgbConverter
+    private lateinit var viewPagerAdapter: ViewPagerAdapter
 
-    // Add reference to OverlayView
-    private lateinit var overlayView: OverlayView
+    private lateinit var drawImages: DrawImages
+
+    private val photoPicker = registerForActivityResult(ActivityResultContracts.PickVisualMedia()) {
+        it?.let {
+            val rotated = Utils.getBitmapFromUri(requireContext(), it) ?: return@let
+            runInstanceSegmentation(rotated)
+        }
+    }
+
+    private var currentPhotoUri: Uri? = null
+    private val photoCapture = registerForActivityResult(ActivityResultContracts.TakePicture()) {
+        if (it) {
+            currentPhotoUri?.let { uri ->
+                val bitmap = Utils.getBitmapFromUri(requireContext(), uri) ?: return@let
+                val rotated = Utils.rotateImageIfRequired(requireContext(), bitmap, uri)
+                runInstanceSegmentation(rotated)
+            }
+        }
+    }
+
+    private val cameraManager: CameraManager by lazy {
+        val context = requireContext().applicationContext
+        context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+    }
+
+    private val characteristics: CameraCharacteristics by lazy {
+        cameraManager.getCameraCharacteristics(Utils.getCameraId(cameraManager))
+    }
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
         _binding = FragmentInstanceSegmentationBinding.inflate(inflater, container, false)
+        viewPagerAdapter = ViewPagerAdapter(mutableListOf())
+        binding.viewpager.adapter = viewPagerAdapter
+        binding.viewpager.addCarouselEffect()
         return binding.root
+    }
+
+    override fun onDestroyView() {
+        _binding = null
+        super.onDestroyView()
     }
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
 
-        overlayView = binding.overlayView // Initialize OverlayView reference
-
         instanceSegmentation = InstanceSegmentation(
             context = requireContext(),
-            modelPath = Constants.MODEL_PATH,
-            labelPath = Constants.LABELS_PATH
+            modelPath = MODEL_PATH,
+            labelPath = LABELS_PATH
         ) {
             toast(it)
         }
 
-        // Initialize CameraX components
-        cameraExecutor = Executors.newSingleThreadExecutor()
-        converter = YuvToRgbConverter(requireContext())
-        cameraProviderFuture = ProcessCameraProvider.getInstance(requireContext())
 
-        // Check for camera permissions
-        if (allPermissionsGranted()) {
-            startCamera()
-        } else {
-            ActivityCompat.requestPermissions(
-                requireActivity(), REQUIRED_PERMISSIONS, REQUEST_CODE_PERMISSIONS
-            )
+        drawImages = DrawImages(requireContext())
+
+        orientationLiveData = OrientationLiveData(requireContext(), characteristics).apply {
+            observe(viewLifecycleOwner) { orientation ->
+                Log.d(InstanceSegmentationFragment::class.java.simpleName, "Orientation changed: $orientation")
+            }
         }
 
         bindListeners()
     }
 
     private fun bindListeners() {
-        binding.ivSettings.setOnClickListener {
-            showSettingsDialog()
-        }
-    }
-
-    private fun startCamera() {
-        cameraProviderFuture.addListener({
-            val cameraProvider = cameraProviderFuture.get()
-            bindPreview(cameraProvider)
-        }, ContextCompat.getMainExecutor(requireContext()))
-    }
-
-    private fun bindPreview(cameraProvider: ProcessCameraProvider) {
-        val preview: Preview = Preview.Builder()
-            .setTargetAspectRatio(AspectRatio.RATIO_4_3) // Adjust as needed
-            .build()
-
-        val cameraSelector: CameraSelector = CameraSelector.Builder()
-            .requireLensFacing(CameraSelector.LENS_FACING_BACK)
-            .build()
-
-        preview.setSurfaceProvider(binding.previewView.surfaceProvider)
-
-        imageAnalyzer = ImageAnalysis.Builder()
-            .setTargetAspectRatio(AspectRatio.RATIO_4_3) // Match preview aspect ratio
-            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-            .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888) // Common format
-            .build()
-            .also {
-                it.setAnalyzer(cameraExecutor, ImageAnalysis.Analyzer { image ->
-                    if (!::bitmapBuffer.isInitialized) {
-                        bitmapBuffer = Bitmap.createBitmap(
-                            image.width, image.height, Bitmap.Config.ARGB_8888
-                        )
-                    }
-                    processImage(image)
-                })
-            }
-
-        try {
-            cameraProvider.unbindAll()
-            // Temporarily remove videoCapture for testing
-            cameraProvider.bindToLifecycle(
-                viewLifecycleOwner,
-                cameraSelector,
-                preview,
-                imageAnalyzer // Bind only Preview and ImageAnalysis
-                // videoCapture // Comment out VideoCapture
-            )
-            Log.d(TAG, "Camera use cases bound (Preview + ImageAnalysis only)") // Add log
-        } catch (exc: Exception) {
-            Log.e(TAG, "Use case binding failed", exc)
-            toast("Failed to start camera.")
-        }
-    }
-
-    private fun processImage(image: ImageProxy) {
-        try {
-            // Convert YUV ImageProxy to Bitmap
-            converter.yuvToRgb(image, bitmapBuffer)
-
-            // Rotate bitmap if needed based on image.imageInfo.rotationDegrees
-            val rotatedBitmap = bitmapBuffer // Placeholder, add rotation if needed
-
-            instanceSegmentation?.invoke(
-                frame = rotatedBitmap,
-                smoothEdges = viewModel.isSmoothEdges,
-                onSuccess = { successResult ->
-                    // Add logging here
-                    Log.d(TAG, "onSuccess called. Pre: ${successResult.preProcessTime}, Inf: ${successResult.interfaceTime}, Post: ${successResult.postProcessTime}")
-                    requireActivity().runOnUiThread {
-                        // Log just before UI update
-                        Log.d(TAG, "Updating UI on main thread.")
-                        updateUIWithResults(successResult, rotatedBitmap.width, rotatedBitmap.height)
-                    }
-                },
-                onFailure = { errorMsg ->
-                    requireActivity().runOnUiThread {
-                        overlayView.clear() // Clear overlay on failure
-                    }
-                }
-            )
-        } catch (e: Exception) {
-            Log.e(TAG, "Error processing image: ${e.message}", e)
-        } finally {
-            image.close() // IMPORTANT: Close the ImageProxy
-        }
-    }
-
-    private fun updateUIWithResults(success: Success, width: Int, height: Int) {
         binding.apply {
-            tvPreProcess.text = getString(R.string.interface_time_value, success.preProcessTime.toString())
-            tvInterfaceTime.text = getString(R.string.interface_time_value, success.interfaceTime.toString())
-            tvPostProcess.text = getString(R.string.interface_time_value, success.postProcessTime.toString())
-        }
-        overlayView.setResults(success.results, width, height)
-    }
+            btnCamera.setOnClickListener {
+                val photoFile = Utils.createImageFile(requireContext())
+                val photoUri = FileProvider.getUriForFile(
+                    requireContext(),
+                    "${BuildConfig.APPLICATION_ID}.provider",
+                    photoFile
+                )
+                currentPhotoUri = photoUri
+                photoCapture.launch(photoUri)
+            }
 
-    override fun onRequestPermissionsResult(
-        requestCode: Int, permissions: Array<String>, grantResults: IntArray
-    ) {
-        if (requestCode == REQUEST_CODE_PERMISSIONS) {
-            if (allPermissionsGranted()) {
-                startCamera()
-            } else {
-                Toast.makeText(requireContext(),
-                    "Permissions not granted by the user.",
-                    Toast.LENGTH_SHORT).show()
+            btnGallery.setOnClickListener {
+                photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+            }
+
+            ivSettings.setOnClickListener {
+                showSettingsDialog()
             }
         }
     }
 
-    private fun allPermissionsGranted() = REQUIRED_PERMISSIONS.all {
-        ContextCompat.checkSelfPermission(
-            requireContext(), it
-        ) == PackageManager.PERMISSION_GRANTED
+    private fun runInstanceSegmentation(bitmap: Bitmap) {
+        // Downsample large images to prevent OOM
+        val maxDimension = 1024
+        val resizedBitmap = if (bitmap.width > maxDimension || bitmap.height > maxDimension) {
+            val scale = maxDimension.toFloat() / max(bitmap.width, bitmap.height)
+            val newWidth = (bitmap.width * scale).toInt()
+            val newHeight = (bitmap.height * scale).toInt()
+            Bitmap.createScaledBitmap(bitmap, newWidth, newHeight, true)
+        } else {
+            bitmap
+        }
+        
+        lifecycleScope.launch(Dispatchers.Default) {
+            try {
+                instanceSegmentation?.invoke(
+                    frame = resizedBitmap,
+                    smoothEdges = false, // Disable smoothing by default to save memory
+                    onSuccess = { 
+                        // Create a copy of the bitmap to prevent recycling issues
+                        val bitmapCopy = resizedBitmap.copy(resizedBitmap.config, false)
+                        processSuccessResult(bitmapCopy, it) 
+                    },
+                    onFailure = { clearOutput(it) }
+                )
+            } catch (e: OutOfMemoryError) {
+                clearOutput("Out of memory error: Please try a smaller image")
+            } finally {
+                // Only recycle if we created a new bitmap AND we're done with it
+                // Don't recycle here - it might still be in use by the adapter
+                // We'll handle recycling in a safer way
+            }
+        }
     }
 
-    override fun onDestroyView() {
-        super.onDestroyView()
-        _binding = null
-        cameraExecutor.shutdown()
+    private fun processSuccessResult(original: Bitmap, success: Success) {
+        requireActivity().runOnUiThread {
+            binding.apply {
+                tvPreProcess.text = getString(R.string.interface_time_value, success.preProcessTime.toString())
+                tvInterfaceTime.text = getString(R.string.interface_time_value, success.interfaceTime.toString())
+                tvPostProcess.text = getString(R.string.interface_time_value, success.postProcessTime.toString())
+            }
+        }
+
+        val images = drawImages.invoke(
+            original = original,
+            success = success,
+            isSeparateOut = viewModel.isSeparateOutChecked,
+            isMaskOut = viewModel.isMaskOutChecked
+        )
+
+        requireActivity().runOnUiThread {
+            viewPagerAdapter.updateImages(images)
+        }
+
+    }
+
+    private fun clearOutput(error: String) {
+        requireActivity().runOnUiThread {
+            binding.apply {
+                tvPreProcess.text = getString(R.string.empty_string)
+                tvInterfaceTime.text = getString(R.string.empty_string)
+                tvPostProcess.text = getString(R.string.empty_string)
+            }
+            viewPagerAdapter.updateImages(mutableListOf())
+            Toast.makeText(requireContext(), error, Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
         instanceSegmentation?.close()
     }
 
     private fun showSettingsDialog() {
+
         val dialog = Dialog(requireContext())
         val customDialogBoxBinding = DialogSettingsBinding.inflate(layoutInflater)
         dialog.setContentView(customDialogBoxBinding.root)
@@ -231,14 +223,10 @@ class InstanceSegmentationFragment : Fragment() {
         dialog.window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
 
         customDialogBoxBinding.apply {
+
             cbSeparateOut.isChecked = viewModel.isSeparateOutChecked
             cbMaskOut.isChecked = viewModel.isMaskOutChecked
             cbSmoothEdges.isChecked = viewModel.isSmoothEdges
-
-            cbSeparateOut.isEnabled = false
-            cbMaskOut.isEnabled = false
-            cbSeparateOut.alpha = 0.5f
-            cbMaskOut.alpha = 0.5f
 
             cbSeparateOut.setOnCheckedChangeListener { _, isChecked ->
                 viewModel.isSeparateOutChecked = isChecked
@@ -265,11 +253,5 @@ class InstanceSegmentationFragment : Fragment() {
         lifecycleScope.launch(Dispatchers.Main) {
             Toast.makeText(requireContext(), message, Toast.LENGTH_LONG).show()
         }
-    }
-
-    companion object {
-        private const val TAG = "InstanceSegmentationFragment"
-        private const val REQUEST_CODE_PERMISSIONS = 10
-        private val REQUIRED_PERMISSIONS = arrayOf(Manifest.permission.CAMERA)
     }
 }
