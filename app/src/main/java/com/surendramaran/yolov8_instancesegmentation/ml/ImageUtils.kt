@@ -1,22 +1,41 @@
 package com.surendramaran.yolov8_instancesegmentation.ml
 
 import kotlin.math.exp
+import kotlin.math.min
 
 object ImageUtils {
+    private const val MAX_DIMENSION = 640 // Maximum width or height for scaling operations
+
     fun Array<IntArray>.scaleMask(targetWidth: Int, targetHeight: Int): Array<IntArray> {
+        // Apply size limits to prevent OOM
+        val limitedTargetWidth = min(targetWidth, MAX_DIMENSION)
+        val limitedTargetHeight = min(targetHeight, MAX_DIMENSION)
+        
+        // If original size is already small, skip scaling
+        if (this.size <= limitedTargetHeight && (this.isEmpty() || this[0].size <= limitedTargetWidth)) {
+            return this
+        }
+
         val originalHeight = this.size
-        val originalWidth = this[0].size
+        val originalWidth = if (originalHeight > 0) this[0].size else 0
 
-        val xRatio = originalWidth.toDouble() / targetWidth
-        val yRatio = originalHeight.toDouble() / targetHeight
+        val xRatio = originalWidth.toDouble() / limitedTargetWidth
+        val yRatio = originalHeight.toDouble() / limitedTargetHeight
 
-        val output = Array(targetHeight) { IntArray(targetWidth) }
-
-        for (y in 0 until targetHeight) {
-            for (x in 0 until targetWidth) {
-                val origX = (x * xRatio).toInt()
-                val origY = (y * yRatio).toInt()
+        // Process in smaller chunks to reduce memory pressure
+        val output = Array(limitedTargetHeight) { IntArray(limitedTargetWidth) }
+        
+        // Use a more memory-efficient sampling approach
+        for (y in 0 until limitedTargetHeight) {
+            val origY = (y * yRatio).toInt().coerceIn(0, originalHeight - 1)
+            for (x in 0 until limitedTargetWidth) {
+                val origX = (x * xRatio).toInt().coerceIn(0, originalWidth - 1)
                 output[y][x] = this[origY][origX]
+            }
+            
+            // Force garbage collection on large images
+            if (originalHeight > 1000 && y % 200 == 0) {
+                System.gc()
             }
         }
 
@@ -30,7 +49,6 @@ object ImageUtils {
             }
         }
     }
-
 
     fun Array<IntArray>.smooth(kernel: Int) : Array<IntArray> {
         // Using Array because it is faster then List

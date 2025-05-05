@@ -57,7 +57,7 @@ class InstanceSegmentation(
 //        }
 
         val options = Interpreter.Options()
-        options.setNumThreads(2)
+        options.setNumThreads(1)
 
         val model = FileUtil.loadMappedFile(context, modelPath)
         interpreter = Interpreter(model, options)
@@ -171,32 +171,57 @@ class InstanceSegmentation(
     }
 
     private fun getFinalMask(width: Int, height: Int, output0: Output0, output1: List<Array<FloatArray>>, smoothEdges: Boolean): Array<IntArray> {
+        // Skip processing if the mask weights are empty
+        if (output0.maskWeight.isEmpty()) {
+            return Array(height) { IntArray(width) }
+        }
+        
         val output1Copy = output1.clone()
         val relX1 = output0.x1 * xPoints
         val relY1 = output0.y1 * yPoints
         val relX2 = output0.x2 * xPoints
         val relY2 = output0.y2 * yPoints
 
+        // Create zero matrix with optimized size
         val zero: Array<FloatArray> = Array(yPoints) { FloatArray(xPoints) { 0F } }
+        
+        // Process mask
         for ((index, proto) in output1Copy.withIndex()) {
+            // Skip if index is out of bounds for maskWeight
+            if (index >= output0.maskWeight.size) continue
+            
             for (y in 0 until yPoints) {
                 for (x in 0 until xPoints) {
                     proto[y][x] *= output0.maskWeight[index]
-                    if (x + 1  > relX1 && x + 1 < relX2 && y + 1 > relY1 && y + 1 < relY2) {
+                    if (x + 1 > relX1 && x + 1 < relX2 && y + 1 > relY1 && y + 1 < relY2) {
                         zero[y][x] += proto[y][x]
                     }
                 }
             }
         }
 
+        // Convert to mask with 0/1 values
         var scaledMask = zero.toMask()
+        
+        // Use a fixed resolution for smoothing to save memory
         if (smoothEdges) {
-            val smoothHeight = ((height.toDouble() / width.toDouble()) * 640).toInt()
-            val smooth = scaledMask.scaleMask(640, smoothHeight)
-            scaledMask = smooth.smooth(smoothnessKernel)
+            try {
+                // Use a constant size for smoothing regardless of input size
+                val smoothWidth = 320
+                val smoothHeight = 320
+                val smooth = scaledMask.scaleMask(smoothWidth, smoothHeight)
+                scaledMask = smooth.smooth(smoothnessKernel)
+            } catch (e: OutOfMemoryError) {
+                // If smoothing fails, continue with unsmoothed mask
+            }
         }
 
-        return scaledMask.scaleMask(width, height)
+        try {
+            return scaledMask.scaleMask(width, height)
+        } catch (e: OutOfMemoryError) {
+            // If final scaling fails, return at current resolution
+            return scaledMask
+        }
     }
 
     private fun reshapeMaskOutput(floatArray: FloatArray): List<Array<FloatArray>> {

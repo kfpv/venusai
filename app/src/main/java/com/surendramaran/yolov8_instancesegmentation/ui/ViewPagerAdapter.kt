@@ -33,6 +33,21 @@ class ViewPagerAdapter(private val images: MutableList<Pair<Bitmap, Bitmap?>>) :
 
     @SuppressLint("NotifyDataSetChanged")
     fun updateImages(newImages: List<Pair<Bitmap, Bitmap?>>) {
+        // Recycle old bitmaps before replacing them
+        for (imagePair in images) {
+            try {
+                // Only recycle bitmaps that aren't the same as any in the new list
+                if (!newImages.contains(imagePair) && !imagePair.first.isRecycled) {
+                    imagePair.first.recycle()
+                }
+                if (imagePair.second != null && !imagePair.second!!.isRecycled) {
+                    imagePair.second!!.recycle()
+                }
+            } catch (e: Exception) {
+                // Ignore recycling errors
+            }
+        }
+        
         images.clear()
         images.addAll(newImages)
         notifyDataSetChanged()

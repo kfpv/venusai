@@ -36,6 +36,7 @@ import com.surendramaran.yolov8_instancesegmentation.utils.Utils
 import com.surendramaran.yolov8_instancesegmentation.utils.Utils.addCarouselEffect
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlin.math.max
 
 class InstanceSegmentationFragment : Fragment(){
     private var _binding: FragmentInstanceSegmentationBinding? = null
@@ -137,13 +138,36 @@ class InstanceSegmentationFragment : Fragment(){
     }
 
     private fun runInstanceSegmentation(bitmap: Bitmap) {
+        // Downsample large images to prevent OOM
+        val maxDimension = 1024
+        val resizedBitmap = if (bitmap.width > maxDimension || bitmap.height > maxDimension) {
+            val scale = maxDimension.toFloat() / max(bitmap.width, bitmap.height)
+            val newWidth = (bitmap.width * scale).toInt()
+            val newHeight = (bitmap.height * scale).toInt()
+            Bitmap.createScaledBitmap(bitmap, newWidth, newHeight, true)
+        } else {
+            bitmap
+        }
+        
         lifecycleScope.launch(Dispatchers.Default) {
-            instanceSegmentation?.invoke(
-                frame = bitmap,
-                smoothEdges = viewModel.isSmoothEdges,
-                onSuccess = {  processSuccessResult(bitmap, it) },
-                onFailure = { clearOutput(it) }
-            )
+            try {
+                instanceSegmentation?.invoke(
+                    frame = resizedBitmap,
+                    smoothEdges = false, // Disable smoothing by default to save memory
+                    onSuccess = { 
+                        // Create a copy of the bitmap to prevent recycling issues
+                        val bitmapCopy = resizedBitmap.copy(resizedBitmap.config, false)
+                        processSuccessResult(bitmapCopy, it) 
+                    },
+                    onFailure = { clearOutput(it) }
+                )
+            } catch (e: OutOfMemoryError) {
+                clearOutput("Out of memory error: Please try a smaller image")
+            } finally {
+                // Only recycle if we created a new bitmap AND we're done with it
+                // Don't recycle here - it might still be in use by the adapter
+                // We'll handle recycling in a safer way
+            }
         }
     }
 
