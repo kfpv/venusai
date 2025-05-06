@@ -137,11 +137,13 @@
                 </LinearLayout>
 
                 <LinearLayout
-                    android:layout_marginTop="4dp"
                     android:id="@+id/llButtons"
+                    android:layout_marginTop="4dp"
                     android:paddingHorizontal="16dp"
                     android:weightSum="2"
                     app:layout_constraintTop_toBottomOf="@id/llInterfaceTime"
+                    app:layout_constraintStart_toStartOf="parent"
+                    app:layout_constraintEnd_toEndOf="parent"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:orientation="horizontal">
@@ -158,6 +160,33 @@
                         android:text="@string/gallery"
                         style="@style/button_half"/>
 
+                </LinearLayout>
+
+                <LinearLayout
+                    android:id="@+id/llExtraButtons"
+                    android:layout_marginTop="8dp"
+                    android:paddingHorizontal="16dp"
+                    android:weightSum="2"
+                    app:layout_constraintTop_toBottomOf="@id/llButtons"
+                    app:layout_constraintStart_toStartOf="parent"
+                    app:layout_constraintEnd_toEndOf="parent"
+                    app:layout_constraintBottom_toBottomOf="parent"
+                    android:layout_marginBottom="8dp"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal">
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btnFlashlight"
+                        style="@style/button_half"
+                        android:text="Flash On"
+                         />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btnZoom"
+                        style="@style/button_half"
+                        android:text="Zoom"
+                        />
                 </LinearLayout>
 
             </androidx.constraintlayout.widget.ConstraintLayout>
